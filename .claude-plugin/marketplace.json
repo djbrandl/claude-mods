@@ -1,0 +1,5 @@
+{
+  "name": "djbrandl-mods",
+  "owner": { "name": "Doug Brandl" },
+  "plugins": [{ "name": "agenda", "source": "./" }]
+}

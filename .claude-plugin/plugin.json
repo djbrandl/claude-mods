@@ -1,0 +1,14 @@
+{
+  "name": "agenda",
+  "version": "0.1.0",
+  "description": "Pane of open questions, items Claude left undone, and a cross-session scratch pad; answer, dismiss or fire off each one.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "extractorModel": {
+      "type": "string",
+      "title": "Extractor model",
+      "description": "Model that scans each reply for open questions and undone items.",
+      "default": "haiku"
+    }
+  }
+}
