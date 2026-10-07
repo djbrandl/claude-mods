@@ -14,7 +14,7 @@ const USAGE = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, c
 
 type Files = Record<string, string>
 
-function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B extends (...a: infer A) => unknown ? A[1] : never) : never>[0], extract: string, store?: Record<string, unknown>, files: Files = {}) {
+function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B extends (...a: infer A) => unknown ? A[1] : never) : never>[0], extract: string | ((prompt: string) => string), store?: Record<string, unknown>, files: Files = {}) {
   const submitted: string[] = []
   const filled: string[] = []
   const ran: string[] = []
@@ -22,6 +22,7 @@ function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B e
   const statuses: (string | undefined)[] = []
   const panes: unknown[] = []
   const agentRows: unknown[] = []
+  const prompts: string[] = []
   if (store) {
     on('store.get', (_$, e) => ({ value: store[e.key] }) as never)
     on('store.set', (_$, e) => { store[e.key] = e.value; return { value: undefined } as never })
@@ -46,7 +47,7 @@ function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B e
   on('fs.read', (_$, e) => ({ value: files[norm(e.path)] ?? '' }) as never)
   on('env.get', (_$, e) => ({ value: e.name === 'HOME' ? 'C:/Users/me' : undefined }) as never)
   on('command.run', (_$, e) => { ran.push(e.command); return { text: '' } as never })
-  on('model.complete', () => ({ value: { isAnswered: true, text: extract, usage: USAGE } }) as never)
+  on('model.complete', (_$, e) => { const prompt = String(e.prompt); prompts.push(prompt); return { value: { isAnswered: true, text: typeof extract === 'string' ? extract : extract(prompt), usage: USAGE } } as never })
   on('prompt.submit', (_$, e) => {
     submitted.push(e.text)
     return { text: e.text } as never
@@ -55,7 +56,7 @@ function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B e
     filled.push(e.text)
     return { isFilled: true } as never
   })
-  return { submitted, filled, ran, agentRows, opened, statuses, panes, files }
+  return { submitted, filled, ran, agentRows, opened, statuses, panes, files, prompts }
 }
 
 const EXTRACT = '{"questions":["Should the undone list survive /clear?"],"undone":["Dashboard regen was left for next session."]}'
@@ -213,4 +214,21 @@ test('a missing theme file is written with the defaults; an edited one restyles 
   expect(await ui.find({ type: 'Text', text: /A answer · ▶ do/ })).toBeDefined()
   await ui.unmount()
   expect(statuses.length).toBeGreaterThanOrEqual(0)
+})
+
+test('an undone item is dropped once a later reply resolves it, and the scan sees the request and the recorded list', async ($, on) => {
+  const { prompts } = bottom(on, prompt => {
+    const m = /Recorded unfinished items \(id: text\):\n([a-z0-9-]+): Dashboard regen/.exec(prompt)
+    return m ? `{"questions":[],"undone":[],"resolved":["${m[1]}"]}` : EXTRACT
+  })
+  await $.prompt.submit({ text: 'Regenerate the dashboard please', origin: { kind: 'composer' } } as never)
+  await $.turn.complete({ answer: 'x'.repeat(40), durationMs: 1, isAborted: false, reason: 'answer', turnId: 't1' } as never)
+  let ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(await ui.find({ type: 'Text', text: /Dashboard regen/ })).toBeDefined()
+  await ui.unmount()
+  expect(prompts[0]).toMatch(/User's request:\nRegenerate the dashboard/)
+  await $.turn.complete({ answer: 'Dashboard regenerated and verified.', durationMs: 1, isAborted: false, reason: 'answer', turnId: 't2' } as never)
+  ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(await ui.find({ type: 'Text', text: /Dashboard regen/ })).toBeUndefined()
+  await ui.unmount()
 })
