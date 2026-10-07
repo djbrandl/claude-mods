@@ -523,16 +523,14 @@ export const register: Register = (on, options) => {
     )
 
     const item = (one: AgendaItem, color: string, buttons: JSX.Element) => (
-      <Box key={one.id} flexDirection="column" paddingLeft={1}>
-        <Box>
-          <Text color={color}>▎</Text>
-          <Box width={inner - 2}>
-            <Text color={C.text} wrap="wrap">
-              {one.text}
-            </Text>
-          </Box>
+      <Box key={one.id} paddingLeft={1} gap={1}>
+        <Text color={color}>▎</Text>
+        <Box flexGrow={1}>
+          <Text color={C.text} wrap="wrap">
+            {one.text}
+          </Text>
         </Box>
-        <Box paddingLeft={1} gap={1}>
+        <Box gap={1} flexShrink={0}>
           {buttons}
         </Box>
       </Box>
@@ -638,33 +636,36 @@ export const register: Register = (on, options) => {
             one,
             C.yellow,
             <>
-              <Button key={`qa-${one.id}`} label="answer" variant="primary" onPress={askAnswer(one)} />
-              <Button key={`qx-${one.id}`} label="dismiss" onPress={dismiss('questions', one)} />
+              <Button key={`qa-${one.id}`} plain label="✎" variant="primary" onPress={askAnswer(one)} />
+              <Button key={`qx-${one.id}`} plain label="✕" dimColor onPress={dismiss('questions', one)} />
             </>,
           ),
         )}
 
-        {heading('UNDONE', C.red, us.length, us.length > 1 ? <Button key="do-all" label="do all" onPress={doAllUndone} /> : undefined)}
+        {heading('UNDONE', C.red, us.length, us.length > 1 ? <Button key="do-all" plain label="▶▶ all" onPress={doAllUndone} /> : undefined)}
         {us.length === 0 && empty('nothing left undone')}
         {us.map(one =>
           item(
             one,
             C.red,
             <>
-              <Button key={`ud-${one.id}`} label="do it" variant="primary" onPress={doUndone(one)} />
-              <Button key={`ux-${one.id}`} label="dismiss" onPress={dismiss('undone', one)} />
+              <Button key={`ud-${one.id}`} plain label="▶" variant="primary" onPress={doUndone(one)} />
+              <Button key={`ux-${one.id}`} plain label="✕" dimColor onPress={dismiss('undone', one)} />
             </>,
           ),
         )}
 
         {heading('NOTES', C.cyan, ns.length)}
-        {ns.map(one => item(one, C.cyan, <Button key={`nx-${one.id}`} label="remove" onPress={dismiss('notes', one)} />))}
+        {ns.map(one => item(one, C.cyan, <Button key={`nx-${one.id}`} plain label="✕" dimColor onPress={dismiss('notes', one)} />))}
         <Box paddingLeft={1}>
           {Input ? (
             <Input key="new-note" placeholder="add a note, kept across sessions" submitLabel="add" onSubmit={addNote} />
           ) : (
             <Text color={C.dim}>add notes with /note from a terminal or desktop</Text>
           )}
+        </Box>
+        <Box marginTop={1}>
+          <Text color={C.dim}>✎ answer · ▶ do · ✕ dismiss · ▸ expand</Text>
         </Box>
       </Box>
     )

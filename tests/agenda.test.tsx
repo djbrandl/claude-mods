@@ -58,11 +58,11 @@ test('a reply with a question and an undone item lands both in the pane', async 
     await ui.unmount()
   }
   const ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
-  const answer = (await ui.findAll({ type: 'Button' })).find(b => b.props.label === 'answer')
+  const answer = (await ui.findAll({ type: 'Button' })).find(b => b.props.label === '✎')
   expect(answer?.key).toBeDefined()
   await ui.press({ key: answer!.key! })
   expect(filled[0]).toMatch(/Answering your earlier question/)
-  const doIt = (await ui.findAll({ type: 'Button' })).find(b => b.props.label === 'do it')
+  const doIt = (await ui.findAll({ type: 'Button' })).find(b => b.props.label === '▶')
   await ui.press({ key: doIt!.key! })
   expect(submitted[0]).toMatch(/Dashboard regen/)
   expect((await ui.find({ type: 'Text', text: /Dashboard regen/ }))).toBeUndefined()
