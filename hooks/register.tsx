@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgendaItem, AgentRow, ContextGauge, Handoff } from '../types'
+import type { AgendaItem, AgentRow, ContextGauge, Handoff, Theme } from '../types'
+import { DEFAULT_THEME, THEME_DOC, legend, mergeTheme } from './theme'
 
 const PANE = 'agenda'
 const TITLE = 'Agenda'
@@ -12,19 +13,8 @@ const MAX_DONE_AGENTS = 4
 const MAX_TASKS_PER_AGENT = 10
 const SUMMARIZE_AFTER_TOOLS = 4
 
-// Deep Space palette, taken from ~/.wezterm.lua (Tokyo Night Moon derived).
-const C = {
-  bg: '#0a0d1a',
-  text: '#c8d3f5',
-  dim: '#545c7e',
-  muted: '#828bb8',
-  blue: '#82aaff',
-  cyan: '#86e1fc',
-  purple: '#c099ff',
-  yellow: '#ffc777',
-  red: '#ff757f',
-  green: '#c3e88d',
-} as const
+// Looks come from the theme file (see hooks/theme.ts); T mirrors the state atom for the helpers.
+let T: Theme = DEFAULT_THEME
 
 const questions = atom({ plugin: 'agenda', key: 'questions' } as const, [])
 const undone = atom({ plugin: 'agenda', key: 'undone' } as const, [])
@@ -35,6 +25,7 @@ const context = atom({ plugin: 'agenda', key: 'context' } as const, null)
 const handoff = atom({ plugin: 'agenda', key: 'handoff' } as const, null)
 const scanning = atom({ plugin: 'agenda', key: 'scanning' } as const, false)
 const handingOff = atom({ plugin: 'agenda', key: 'handingOff' } as const, false)
+const theme = atom({ plugin: 'agenda', key: 'theme' } as const, DEFAULT_THEME)
 
 // Questions are the session's alone and live in $.state only. Undone, notes and the pending handoff
 // belong to the project directory and are stored under its path.
@@ -339,13 +330,13 @@ async function writeHandoff($: EngineInterface): Promise<Handoff | null> {
 
 function bar(percent: number, width: number): string {
   const filled = Math.round((Math.max(0, Math.min(100, percent)) / 100) * width)
-  return '█'.repeat(filled) + '░'.repeat(Math.max(0, width - filled))
+  return T.gauge.filled.repeat(filled) + T.gauge.empty.repeat(Math.max(0, width - filled))
 }
 
 function gaugeColor(percent: number): string {
-  if (percent >= 75) return C.red
-  if (percent >= 50) return C.yellow
-  return C.purple
+  if (percent >= T.gauge.dangerAt) return T.gauge.danger
+  if (percent >= T.gauge.warnAt) return T.gauge.warn
+  return T.gauge.ok
 }
 
 function kTokens(n: number): string {
@@ -358,28 +349,60 @@ function elapsed(row: AgentRow, now: number): string {
 }
 
 function agentGlyph(status: AgentRow['status']): { glyph: string; color: string } {
-  switch (status) {
-    case 'running':
-      return { glyph: '●', color: C.blue }
-    case 'pending':
-      return { glyph: '○', color: C.muted }
-    case 'waiting':
-    case 'idle':
-      return { glyph: '◐', color: C.yellow }
-    case 'completed':
-      return { glyph: '✓', color: C.green }
-    case 'failed':
-    case 'killed':
-      return { glyph: '✗', color: C.red }
+  return T.status[status]
+}
+
+async function expandHome($: EngineInterface, path: string): Promise<string> {
+  if (!path.startsWith('~')) return path
+  const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')) ?? ''
+  return home.replace(/[\/]+$/, '') + path.slice(1)
+}
+
+/**
+ * Reads the theme file. A missing file is written with the defaults so there is something to edit;
+ * an unreadable or malformed one yields the defaults and a note of why.
+ */
+async function loadTheme($: EngineInterface, themeFile: string): Promise<{ theme: Theme; path: string; problem?: string; isNew?: boolean }> {
+  const path = await expandHome($, themeFile)
+  let exists = false
+  try {
+    exists = await $.fs.exists(path)
+  } catch {
+    return { theme: DEFAULT_THEME, path, problem: 'could not check the theme file' }
   }
+  if (!exists) {
+    try {
+      await $.fs.write(path, JSON.stringify({ $doc: THEME_DOC, ...DEFAULT_THEME }, null, 2) + '\n')
+      return { theme: DEFAULT_THEME, path, isNew: true }
+    } catch {
+      return { theme: DEFAULT_THEME, path, problem: 'could not write the starter theme file' }
+    }
+  }
+  try {
+    const text = await $.fs.read(path)
+    return { theme: mergeTheme(JSON.parse(text)), path }
+  } catch {
+    return { theme: DEFAULT_THEME, path, problem: 'theme file is not valid JSON; using defaults' }
+  }
+}
+
+async function applyTheme($: EngineInterface, themeFile: string, isReload: boolean): Promise<void> {
+  const loaded = await loadTheme($, themeFile)
+  T = loaded.theme
+  await update($, theme, () => loaded.theme)
+  if (loaded.isNew) $.ui.toast(`Agenda: starter theme written to ${loaded.path}; edit it and run /agenda to reload`)
+  else if (loaded.problem) $.ui.toast(`Agenda: ${loaded.problem} (${loaded.path})`)
+  else if (isReload) $.ui.toast('Agenda: theme reloaded')
 }
 
 export const register: Register = (on, options) => {
   const extractorModel = String(options.extractorModel ?? 'haiku')
+  const themeFile = String(options.themeFile ?? '~/.claude/agenda.theme.json')
 
   let hasOpenedOnPrompt = false
 
   on('session.start', async ($, e, next) => {
+    await applyTheme($, themeFile, false)
     await load($)
     await persist($)
     await $.command.register({ name: 'agenda', description: 'Open the Agenda pane (agents, context, questions, undone, notes)' })
@@ -429,6 +452,7 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'agenda' }, async $ => {
+    await applyTheme($, themeFile, true)
     const opened = await $.ui.open({ id: PANE, title: TITLE, focus: true })
     return { text: opened.isPlaced ? 'Agenda pane opened.' : 'Agenda pane could not be placed; widen the terminal.' }
   })
@@ -522,6 +546,8 @@ export const register: Register = (on, options) => {
     const pending = await read($, handoff)
     const busy = await read($, scanning)
     const isHandingOff = await read($, handingOff)
+    const t = await read($, theme)
+    T = t
     const width = Math.max(24, e.props.bodyColumns)
     const inner = width - 2
     const now = Date.now()
@@ -566,7 +592,7 @@ export const register: Register = (on, options) => {
           <Text color={color} bold>
             {label}
           </Text>
-          <Text color={C.dim}>{count}</Text>
+          <Text color={t.colors.dim}>{count}</Text>
         </Box>
         {trailing}
       </Box>
@@ -574,9 +600,9 @@ export const register: Register = (on, options) => {
 
     const item = (one: AgendaItem, color: string, buttons: JSX.Element) => (
       <Box key={one.id} paddingLeft={1} gap={1}>
-        <Text color={color}>▎</Text>
+        <Text color={color}>{t.glyphs.bullet}</Text>
         <Box flexGrow={1}>
-          <Text color={C.text} wrap="wrap">
+          <Text color={t.colors.text} wrap="wrap">
             {one.text}
           </Text>
         </Box>
@@ -588,7 +614,7 @@ export const register: Register = (on, options) => {
 
     const empty = (text: string) => (
       <Box paddingLeft={2}>
-        <Text color={C.dim} italic>
+        <Text color={t.colors.dim} italic>
           {text}
         </Text>
       </Box>
@@ -597,13 +623,13 @@ export const register: Register = (on, options) => {
     const barWidth = Math.max(8, inner - 8)
 
     return (
-      <Box flexDirection="column" width={width} backgroundColor={C.bg} paddingX={1}>
+      <Box flexDirection="column" width={width} backgroundColor={t.colors.background} paddingX={1}>
         <Box justifyContent="space-between">
-          <Text color={C.purple} bold>
-            CONTEXT
+          <Text color={t.sections.context} bold>
+            {t.labels.context}
           </Text>
           {gauge && (
-            <Text color={C.muted}>
+            <Text color={t.colors.muted}>
               {kTokens(gauge.tokens)} / {kTokens(gauge.window)} · API-equiv ${gauge.usd.toFixed(2)}
             </Text>
           )}
@@ -621,20 +647,20 @@ export const register: Register = (on, options) => {
         <Box gap={1} marginTop={1}>
           <Button
             key="handoff"
-            label={isHandingOff ? 'writing handoff…' : 'handoff + clear'}
+            label={isHandingOff ? 'writing handoff…' : t.labels.handoff}
             variant="primary"
             hotkey="h"
             onPress={handoffAndClear}
           />
-          {pending && <Button key="drop-handoff" label="drop pending handoff" onPress={dropHandoff} />}
+          {pending && <Button key="drop-handoff" label={t.labels.dropHandoff} onPress={dropHandoff} />}
         </Box>
         {pending && (
           <Box paddingLeft={2}>
-            <Text color={C.green}>handoff loaded, consumed on the next reply</Text>
+            <Text color={t.colors.success}>handoff loaded, consumed on the next reply</Text>
           </Box>
         )}
 
-        {heading('AGENTS', C.blue, rows.filter(one => one.endedAt === undefined).length)}
+        {heading(t.labels.agents, t.sections.agents, rows.filter(one => one.endedAt === undefined).length)}
         {rows.length === 0 && empty('no subagents')}
         {rows.map(row => {
           const { glyph, color } = agentGlyph(row.status)
@@ -645,24 +671,24 @@ export const register: Register = (on, options) => {
             <Box key={row.id} flexDirection="column" paddingLeft={1}>
               <Box gap={1}>
                 <Text color={color}>{glyph}</Text>
-                <Button key={`ag-${row.id}`} plain label={isOpen ? '▾' : '▸'} onPress={toggleAgent(row.id)} />
+                <Button key={`ag-${row.id}`} plain label={isOpen ? t.glyphs.collapse : t.glyphs.expand} onPress={toggleAgent(row.id)} />
                 <Box width={inner - 14}>
-                  <Text color={isDone ? C.dim : C.text} bold={!isDone} wrap="truncate-end">
+                  <Text color={isDone ? t.colors.dim : t.colors.text} bold={!isDone} wrap="truncate-end">
                     {row.description}
                   </Text>
                 </Box>
-                <Text color={C.dim}>{elapsed(row, now)}</Text>
+                <Text color={t.colors.dim}>{elapsed(row, now)}</Text>
               </Box>
               {!isOpen && latest && (
                 <Box paddingLeft={4} width={inner - 4}>
-                  <Text color={C.muted} wrap="truncate-end">
+                  <Text color={t.colors.muted} wrap="truncate-end">
                     {latest}
                   </Text>
                 </Box>
               )}
               {isOpen && row.tasks.length === 0 && (
                 <Box paddingLeft={4}>
-                  <Text color={C.dim} italic>
+                  <Text color={t.colors.dim} italic>
                     no tasks summarised yet
                   </Text>
                 </Box>
@@ -670,7 +696,7 @@ export const register: Register = (on, options) => {
               {isOpen &&
                 row.tasks.map((task, i) => (
                   <Box key={`${row.id}-${i}`} paddingLeft={4} width={inner - 4}>
-                    <Text color={i === row.tasks.length - 1 ? C.text : C.muted} wrap="wrap">
+                    <Text color={i === row.tasks.length - 1 ? t.colors.text : t.colors.muted} wrap="wrap">
                       {i + 1}. {task}
                     </Text>
                   </Box>
@@ -679,43 +705,43 @@ export const register: Register = (on, options) => {
           )
         })}
 
-        {heading('QUESTIONS', C.yellow, qs.length, busy ? <Text color={C.dim}>scanning…</Text> : undefined)}
+        {heading(t.labels.questions, t.sections.questions, qs.length, busy ? <Text color={t.colors.dim}>scanning…</Text> : undefined)}
         {qs.length === 0 && empty('none pending')}
         {qs.map(one =>
           item(
             one,
-            C.yellow,
+            t.sections.questions,
             <>
-              <Button key={`qa-${one.id}`} plain label="✎" variant="primary" onPress={askAnswer(one)} />
-              <Button key={`qx-${one.id}`} plain label="✕" dimColor onPress={dismiss('questions', one)} />
+              <Button key={`qa-${one.id}`} plain label={t.glyphs.answer} variant="primary" onPress={askAnswer(one)} />
+              <Button key={`qx-${one.id}`} plain label={t.glyphs.dismiss} dimColor onPress={dismiss('questions', one)} />
             </>,
           ),
         )}
 
-        {heading('UNDONE', C.red, us.length, us.length > 1 ? <Button key="do-all" plain label="▶▶ all" onPress={doAllUndone} /> : undefined)}
+        {heading(t.labels.undone, t.sections.undone, us.length, us.length > 1 ? <Button key="do-all" plain label={t.glyphs.doAll} onPress={doAllUndone} /> : undefined)}
         {us.length === 0 && empty('nothing left undone')}
         {us.map(one =>
           item(
             one,
-            C.red,
+            t.sections.undone,
             <>
-              <Button key={`ud-${one.id}`} plain label="▶" variant="primary" onPress={doUndone(one)} />
-              <Button key={`ux-${one.id}`} plain label="✕" dimColor onPress={dismiss('undone', one)} />
+              <Button key={`ud-${one.id}`} plain label={t.glyphs.do} variant="primary" onPress={doUndone(one)} />
+              <Button key={`ux-${one.id}`} plain label={t.glyphs.dismiss} dimColor onPress={dismiss('undone', one)} />
             </>,
           ),
         )}
 
-        {heading('NOTES', C.cyan, ns.length)}
-        {ns.map(one => item(one, C.cyan, <Button key={`nx-${one.id}`} plain label="✕" dimColor onPress={dismiss('notes', one)} />))}
+        {heading(t.labels.notes, t.sections.notes, ns.length)}
+        {ns.map(one => item(one, t.sections.notes, <Button key={`nx-${one.id}`} plain label={t.glyphs.dismiss} dimColor onPress={dismiss('notes', one)} />))}
         <Box paddingLeft={1}>
           {Input ? (
             <Input key="new-note" placeholder="add a project note, kept across sessions" submitLabel="add" onSubmit={addNote} />
           ) : (
-            <Text color={C.dim}>add notes with /note from a terminal or desktop</Text>
+            <Text color={t.colors.dim}>add notes with /note from a terminal or desktop</Text>
           )}
         </Box>
         <Box marginTop={1}>
-          <Text color={C.dim}>✎ answer · ▶ do · ✕ dismiss · ▸ expand</Text>
+          <Text color={t.colors.dim}>{legend(t)}</Text>
         </Box>
       </Box>
     )

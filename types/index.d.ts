@@ -43,6 +43,27 @@ declare module 'claude-code' {
       handoff: Handoff | null
       scanning: boolean
       handingOff: boolean
+      theme: Theme
     }
   }
+}
+
+export type StatusLook = { glyph: string; color: string }
+
+/** Everything a person may restyle; read from the theme file, defaults filled in. */
+export type Theme = {
+  colors: { background: string; text: string; dim: string; muted: string; success: string }
+  sections: { context: string; agents: string; questions: string; undone: string; notes: string }
+  gauge: { ok: string; warn: string; danger: string; warnAt: number; dangerAt: number; filled: string; empty: string }
+  status: {
+    pending: StatusLook
+    running: StatusLook
+    waiting: StatusLook
+    idle: StatusLook
+    completed: StatusLook
+    failed: StatusLook
+    killed: StatusLook
+  }
+  glyphs: { answer: string; do: string; doAll: string; dismiss: string; expand: string; collapse: string; bullet: string }
+  labels: { context: string; agents: string; questions: string; undone: string; notes: string; handoff: string; dropHandoff: string }
 }

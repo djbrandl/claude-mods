@@ -12,7 +12,9 @@ const PANE_PROPS = {
 const HANDOFF_TEXT = ['# Handoff', '## Next step', 'Finish the pane.'].join(String.fromCharCode(10))
 const USAGE = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
-function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B extends (...a: infer A) => unknown ? A[1] : never) : never>[0], extract: string, store?: Record<string, unknown>) {
+type Files = Record<string, string>
+
+function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B extends (...a: infer A) => unknown ? A[1] : never) : never>[0], extract: string, store?: Record<string, unknown>, files: Files = {}) {
   const submitted: string[] = []
   const filled: string[] = []
   const ran: string[] = []
@@ -38,7 +40,11 @@ function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B e
   on('agent.list', () => ({ value: agentRows }) as never)
   on('model.fork', () => ({ value: { isAnswered: true, text: HANDOFF_TEXT, usage: USAGE } }) as never)
   on('session.cwd', () => ({ value: 'C:/tmp/proj' }) as never)
-  on('fs.write', () => ({ value: undefined }) as never)
+  const norm = (path: string) => path.split(String.fromCharCode(92)).join('/')
+  on('fs.write', (_$, e) => { files[norm(e.path)] = e.text; return { value: undefined } as never })
+  on('fs.exists', (_$, e) => ({ value: norm(e.path) in files }) as never)
+  on('fs.read', (_$, e) => ({ value: files[norm(e.path)] ?? '' }) as never)
+  on('env.get', (_$, e) => ({ value: e.name === 'HOME' ? 'C:/Users/me' : undefined }) as never)
   on('command.run', (_$, e) => { ran.push(e.command); return { text: '' } as never })
   on('model.complete', () => ({ value: { isAnswered: true, text: extract, usage: USAGE } }) as never)
   on('prompt.submit', (_$, e) => {
@@ -49,7 +55,7 @@ function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B e
     filled.push(e.text)
     return { isFilled: true } as never
   })
-  return { submitted, filled, ran, agentRows, opened, statuses, panes }
+  return { submitted, filled, ran, agentRows, opened, statuses, panes, files }
 }
 
 const EXTRACT = '{"questions":["Should the undone list survive /clear?"],"undone":["Dashboard regen was left for next session."]}'
@@ -186,4 +192,25 @@ test('questions stay in the session; undone and notes are stored per project dir
   expect(stored.questions).toBeUndefined()
   expect(Array.isArray(stored.undone) && stored.undone.length).toBe(1)
   expect(store['agenda:v1']).toBeUndefined()
+})
+
+test('a missing theme file is written with the defaults; an edited one restyles the pane and survives as a separate file', async ($, on) => {
+  const files: Files = {}
+  const { statuses } = bottom(on, '{"questions":[],"undone":[]}', undefined, files)
+  on('session.start', (_$, e) => ({ cwd: e.cwd }) as never)
+  on('clock.every', () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: 'C:/tmp/proj', surface: 'terminal', isInteractive: true } as never)
+  const path = 'C:/Users/me/.claude/agenda.theme.json'
+  expect(files[path]).toBeDefined()
+  expect(JSON.parse(files[path]!).glyphs.answer).toBe('✎')
+  let ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(await ui.find({ type: 'Text', text: /^QUESTIONS$/ })).toBeDefined()
+  await ui.unmount()
+  files[path] = JSON.stringify({ labels: { questions: 'ASKS' }, glyphs: { answer: 'A' }, gauge: { warnAt: 10 } })
+  await $.command.run({ command: 'agenda', args: '', origin: { kind: 'composer' }, presentation: 'inline' } as never)
+  ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(await ui.find({ type: 'Text', text: /^ASKS$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /A answer · ▶ do/ })).toBeDefined()
+  await ui.unmount()
+  expect(statuses.length).toBeGreaterThanOrEqual(0)
 })

@@ -1,6 +1,6 @@
 {
   "name": "agenda",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pane of open questions, items Claude left undone, and a cross-session scratch pad; answer, dismiss or fire off each one.",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -14,6 +14,12 @@
         "sonnet",
         "opus"
       ]
+    },
+    "themeFile": {
+      "type": "string",
+      "title": "Theme file (colours, glyphs, labels)",
+      "description": "Path of a JSON file that styles the pane: colours, section labels, button glyphs and the context-gauge thresholds. If the file does not exist it is written with the defaults so you can edit it. Plugin updates never change it; run /agenda after editing to reload. ~ means your home folder.",
+      "default": "~/.claude/agenda.theme.json"
     }
   }
 }

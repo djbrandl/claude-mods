@@ -21,6 +21,13 @@ pull out open questions and unfinished work, and to write the one-line subagent 
 which Claude does that chore. `haiku` (the default) is cheap, fast and enough; it has no effect on which model
 answers you in the main chat. Change it with `/plugin configure agenda` only if the one-liners read badly.
 
+## Styling
+
+The first run writes `~/.claude/agenda.theme.json` with the defaults. Edit it (colours as hex or terminal colour
+names, any text for glyphs and labels, the two context-gauge thresholds), then run `/agenda` to reload. Plugin
+updates replace the plugin, never that file, so your styling survives every update. Leave a key out to keep its
+default; delete the file to start over. The path is a plugin setting (`themeFile`) if you want it elsewhere.
+
 ## Develop
 
 ```
