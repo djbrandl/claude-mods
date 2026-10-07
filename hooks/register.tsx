@@ -729,7 +729,12 @@ export const register: Register = (on, options) => {
           ),
         )}
 
-        {heading(t.labels.undone, t.sections.undone, us.length, us.length > 1 ? <Button key="do-all" plain label={t.glyphs.doAll} onPress={doAllUndone} /> : undefined)}
+        {heading(t.labels.undone, t.sections.undone, us.length, us.length > 1 ? (
+            <Box gap={1}>
+              <Button key="do-all" plain label={t.glyphs.doAll} onPress={doAllUndone} />
+              <Button key="dismiss-all" plain label={t.glyphs.dismissAll} dimColor onPress={() => void setList($, 'undone', () => [])} />
+            </Box>
+          ) : undefined)}
         {us.length === 0 && empty('nothing left undone')}
         {us.map(one =>
           item(

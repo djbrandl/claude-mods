@@ -17,7 +17,7 @@ export const DEFAULT_THEME: Theme = {
     failed: { glyph: '✗', color: '#ff757f' },
     killed: { glyph: '✗', color: '#ff757f' },
   },
-  glyphs: { answer: '✎', do: '▶', doAll: '▶▶ all', dismiss: '✕', expand: '▸', collapse: '▾', bullet: '▎' },
+  glyphs: { answer: '✎', do: '▶', doAll: '▶▶ all', dismiss: '✕', dismissAll: '✕ all', expand: '▸', collapse: '▾', bullet: '▎' },
   labels: {
     context: 'CONTEXT',
     agents: 'AGENTS',

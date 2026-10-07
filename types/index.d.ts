@@ -64,6 +64,6 @@ export type Theme = {
     failed: StatusLook
     killed: StatusLook
   }
-  glyphs: { answer: string; do: string; doAll: string; dismiss: string; expand: string; collapse: string; bullet: string }
+  glyphs: { answer: string; do: string; doAll: string; dismiss: string; dismissAll: string; expand: string; collapse: string; bullet: string }
   labels: { context: string; agents: string; questions: string; undone: string; notes: string; handoff: string; dropHandoff: string }
 }
