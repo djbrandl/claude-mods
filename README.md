@@ -1,8 +1,9 @@
 # agenda
 
 A Claude Code mod: one pane with a context gauge and handoff-and-clear, a live list of subagents with
-collapsible one-sentence task summaries, open questions pulled from each reply, items left undone (with
-"do it" buttons), and a scratch pad of notes kept across sessions and injected into the system prompt.
+collapsible one-sentence task summaries, open questions pulled from each reply (this session only), items left undone (with
+"do it" buttons), and a scratch pad of notes. Undone items and notes belong to the project directory and are kept
+across sessions and injected into the system prompt. The status line shows the counts only while the pane is off screen.
 
 ## Install
 

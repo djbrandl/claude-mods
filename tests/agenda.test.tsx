@@ -12,17 +12,26 @@ const PANE_PROPS = {
 const HANDOFF_TEXT = ['# Handoff', '## Next step', 'Finish the pane.'].join(String.fromCharCode(10))
 const USAGE = { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
 
-function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B extends (...a: infer A) => unknown ? A[1] : never) : never>[0], extract: string) {
+function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B extends (...a: infer A) => unknown ? A[1] : never) : never>[0], extract: string, store?: Record<string, unknown>) {
   const submitted: string[] = []
   const filled: string[] = []
   const ran: string[] = []
   const opened: string[] = []
+  const statuses: (string | undefined)[] = []
+  const panes: unknown[] = []
   const agentRows: unknown[] = []
-  mock.store(on)
+  if (store) {
+    on('store.get', (_$, e) => ({ value: store[e.key] }) as never)
+    on('store.set', (_$, e) => { store[e.key] = e.value; return { value: undefined } as never })
+    on('store.delete', (_$, e) => { delete store[e.key]; return { value: undefined } as never })
+    on('store.keys', () => ({ value: Object.keys(store) }) as never)
+  } else {
+    mock.store(on)
+  }
   on('command.register', () => ({ value: { isRegistered: true } }) as never)
   on('ui.open', () => { opened.push('agenda'); return { value: { isPlaced: true } } as never })
-  on('ui.panes', () => ({ value: [] }) as never)
-  on('ui.status', () => ({ value: undefined }) as never)
+  on('ui.panes', () => ({ value: panes }) as never)
+  on('ui.status', (_$, e) => { statuses.push(e.text); return { value: undefined } as never })
   on('ui.toast', () => ({ value: undefined }) as never)
   on('turn.complete', (_$, e) => ({ text: e.answer }) as never)
   on('session.usage', () => ({ value: { startedAt: 0, context: { tokens: 120000, window: 200000, percent: 60 }, rateLimits: [], cost: { usd: 1.25 } } }) as never)
@@ -40,7 +49,7 @@ function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B e
     filled.push(e.text)
     return { isFilled: true } as never
   })
-  return { submitted, filled, ran, agentRows, opened }
+  return { submitted, filled, ran, agentRows, opened, statuses, panes }
 }
 
 const EXTRACT = '{"questions":["Should the undone list survive /clear?"],"undone":["Dashboard regen was left for next session."]}'
@@ -145,4 +154,36 @@ test('the pane is opened as the person\'s own ask on the first prompt of the ses
   await $.prompt.submit({ text: 'hello' } as never)
   await $.prompt.submit({ text: 'again' } as never)
   expect(opened).toHaveLength(1)
+})
+
+test('the status line carries counts only while the pane is off screen', async ($, on) => {
+  const { statuses, panes } = bottom(on, EXTRACT)
+  await $.turn.complete({ answer: 'x'.repeat(40), durationMs: 1, isAborted: false, reason: 'answer', turnId: 't' } as never)
+  // Mounting settles the background scan the turn started.
+  let ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  await ui.unmount()
+  expect(statuses[statuses.length - 1]).toMatch(/1 open question · 1 undone/)
+  panes.push({ id: 'agenda', title: 'Agenda', isShown: true, isFocused: false, isPlaced: true })
+  await $.command.run({ command: 'agenda', args: '', origin: { kind: 'composer' }, presentation: 'inline' } as never)
+  ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  await ui.unmount()
+  expect(statuses[statuses.length - 1]).toBeUndefined()
+})
+
+test('questions stay in the session; undone and notes are stored per project directory', async ($, on) => {
+  const store: Record<string, unknown> = { 'agenda:v1': { notes: [{ id: 'n1', text: 'legacy note', at: '' }], undone: [], questions: [{ id: 'q0', text: 'old question', at: '' }] } }
+  bottom(on, EXTRACT, store)
+  on('session.start', (_$, e) => ({ cwd: e.cwd }) as never)
+  on('clock.every', () => ({ value: undefined }) as never)
+  await $.session.start({ cwd: 'C:/tmp/proj', surface: 'terminal', isInteractive: true } as never)
+  await $.turn.complete({ answer: 'x'.repeat(40), durationMs: 1, isAborted: false, reason: 'answer', turnId: 't' } as never)
+  const ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(await ui.find({ type: 'Text', text: /legacy note/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /old question/ })).toBeUndefined()
+  await ui.unmount()
+  const stored = store['agenda:v2:c:/tmp/proj'] as Record<string, unknown>
+  expect(stored).toBeDefined()
+  expect(stored.questions).toBeUndefined()
+  expect(Array.isArray(stored.undone) && stored.undone.length).toBe(1)
+  expect(store['agenda:v1']).toBeUndefined()
 })

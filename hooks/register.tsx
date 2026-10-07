@@ -5,7 +5,8 @@ import type { AgendaItem, AgentRow, ContextGauge, Handoff } from '../types'
 
 const PANE = 'agenda'
 const TITLE = 'Agenda'
-const STORE_KEY = 'agenda:v1'
+const LEGACY_STORE_KEY = 'agenda:v1'
+const STORE_PREFIX = 'agenda:v2:'
 const MAX_PER_LIST = 60
 const MAX_DONE_AGENTS = 4
 const MAX_TASKS_PER_AGENT = 10
@@ -35,7 +36,9 @@ const handoff = atom({ plugin: 'agenda', key: 'handoff' } as const, null)
 const scanning = atom({ plugin: 'agenda', key: 'scanning' } as const, false)
 const handingOff = atom({ plugin: 'agenda', key: 'handingOff' } as const, false)
 
-type Stored = { questions: AgendaItem[]; undone: AgendaItem[]; notes: AgendaItem[]; handoff: Handoff | null }
+// Questions are the session's alone and live in $.state only. Undone, notes and the pending handoff
+// belong to the project directory and are stored under its path.
+type Stored = { undone: AgendaItem[]; notes: AgendaItem[]; handoff: Handoff | null }
 type ListName = 'questions' | 'undone' | 'notes'
 
 const EXTRACT_SYSTEM = `You read one reply from a coding assistant to its user and extract two lists.
@@ -110,9 +113,29 @@ function asList(value: unknown): AgendaItem[] {
     : []
 }
 
+let projectKey = ''
+
+async function projectStoreKey($: EngineInterface): Promise<string> {
+  if (!projectKey) {
+    const cwd = (await $.session.cwd()).replace(/[\/]+$/, '').toLowerCase()
+    projectKey = STORE_PREFIX + cwd
+  }
+  return projectKey
+}
+
 async function load($: EngineInterface): Promise<void> {
-  const raw = (await $.store.get(STORE_KEY)) as Partial<Stored> | undefined
-  await update($, questions, () => asList(raw?.questions))
+  const key = await projectStoreKey($)
+  let raw = (await $.store.get(key)) as Partial<Stored> | undefined
+  if (!raw) {
+    // One-time migration of the pre-project store: its items were made in this project.
+    const legacy = (await $.store.get(LEGACY_STORE_KEY)) as Partial<Stored> | undefined
+    if (legacy) {
+      raw = legacy
+      await $.store.set(key, { undone: asList(legacy.undone), notes: asList(legacy.notes), handoff: legacy.handoff ?? null })
+      await $.store.delete(LEGACY_STORE_KEY)
+    }
+  }
+  await update($, questions, () => [])
   await update($, undone, () => asList(raw?.undone))
   await update($, notes, () => asList(raw?.notes))
   const h = raw?.handoff
@@ -121,14 +144,24 @@ async function load($: EngineInterface): Promise<void> {
 
 async function persist($: EngineInterface): Promise<void> {
   const stored: Stored = {
-    questions: await read($, questions),
     undone: await read($, undone),
     notes: await read($, notes),
     handoff: await read($, handoff),
   }
-  await $.store.set(STORE_KEY, stored)
-  const q = stored.questions.length
-  const u = stored.undone.length
+  await $.store.set(await projectStoreKey($), stored)
+  await refreshStatus($)
+}
+
+// The status line carries the counts only while the pane is not on screen.
+async function refreshStatus($: EngineInterface): Promise<void> {
+  const panes = await $.ui.panes()
+  const mine = panes.find(one => one.id === PANE)
+  if (mine && mine.isPlaced && mine.isShown) {
+    $.ui.status(undefined)
+    return
+  }
+  const q = (await read($, questions)).length
+  const u = (await read($, undone)).length
   $.ui.status(q + u === 0 ? undefined : `agenda: ${q} open question${q === 1 ? '' : 's'} · ${u} undone`)
 }
 
@@ -376,7 +409,24 @@ export const register: Register = (on, options) => {
       if (!mine || !mine.isPlaced) void $.ui.open({ id: PANE, title: TITLE })
     }
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('session.end', async ($, e, next) => {
+    await update($, questions, () => [])
+    return next(e)
   })
+
+  on('ui.open', { id: PANE }, async ($, e, next) => {
+    const result = await next(e)
+    void refreshStatus($)
+    return result
+  }).catch(($, e, next) => next(e))
+
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    const result = await next(e)
+    void refreshStatus($)
+    return result
+  }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'agenda' }, async $ => {
     const opened = await $.ui.open({ id: PANE, title: TITLE, focus: true })
@@ -401,7 +451,7 @@ export const register: Register = (on, options) => {
     const result = await next(e)
     await refreshAgents($)
     return result
-  })
+  }).catch(($, e, next) => next(e))
 
   on('session.append', { door: 'response' }, ($, e, next) => {
     if (e.agentId && e.message.role === 'assistant') {
@@ -409,7 +459,7 @@ export const register: Register = (on, options) => {
       if (isDue) void summarizeActivity($, e.agentId, extractorModel)
     }
     return next(e)
-  })
+  }).catch(($, e, next) => next(e))
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
@@ -439,7 +489,7 @@ export const register: Register = (on, options) => {
         scope: 'session',
         text: [
           '# Agenda scratch pad',
-          'Standing notes the user keeps across sessions through the agenda pane. Treat them as context that must not be lost; honour any to-do or constraint listed here when it is relevant to the current work.',
+          'Standing notes the user keeps for this project directory, across sessions, through the agenda pane. Treat them as context that must not be lost; honour any to-do or constraint listed here when it is relevant to the current work.',
           ...list.map(one => `- ${one.text}`),
         ].join('\n'),
       })
@@ -659,7 +709,7 @@ export const register: Register = (on, options) => {
         {ns.map(one => item(one, C.cyan, <Button key={`nx-${one.id}`} plain label="✕" dimColor onPress={dismiss('notes', one)} />))}
         <Box paddingLeft={1}>
           {Input ? (
-            <Input key="new-note" placeholder="add a note, kept across sessions" submitLabel="add" onSubmit={addNote} />
+            <Input key="new-note" placeholder="add a project note, kept across sessions" submitLabel="add" onSubmit={addNote} />
           ) : (
             <Text color={C.dim}>add notes with /note from a terminal or desktop</Text>
           )}
