@@ -6,9 +6,14 @@
   "userConfig": {
     "extractorModel": {
       "type": "string",
-      "title": "Extractor model",
-      "description": "Model that scans each reply for open questions and undone items.",
-      "default": "haiku"
+      "title": "Summary model (which Claude writes the pane's one-liners)",
+      "description": "The Agenda pane runs a small background Claude call after each reply to pull out open questions and unfinished work, and to write one-line summaries of what each subagent is doing. This picks which Claude does that. \"haiku\" is the cheapest and fast, and is all this job needs; it never changes which model answers you in the main chat. Leave it at haiku unless the one-liners read badly.",
+      "default": "haiku",
+      "options": [
+        "haiku",
+        "sonnet",
+        "opus"
+      ]
     }
   }
 }

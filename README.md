@@ -13,7 +13,12 @@ collapsible one-sentence task summaries, open questions pulled from each reply, 
 Answer `y` to add the marketplace, pick the user scope. Then `/agenda` opens the pane, `/note <text>` adds a
 note, `/handoff` writes a handoff and clears.
 
-Config: `extractorModel` (default `haiku`) is the model that scans replies and summarises subagent work.
+## The one setting
+
+The installer asks for a **Summary model**. The pane runs a small background Claude call after each reply to
+pull out open questions and unfinished work, and to write the one-line subagent summaries. This setting picks
+which Claude does that chore. `haiku` (the default) is cheap, fast and enough; it has no effect on which model
+answers you in the main chat. Change it with `/plugin configure agenda` only if the one-liners read badly.
 
 ## Develop
 
