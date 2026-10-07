@@ -16,10 +16,12 @@ function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B e
   const submitted: string[] = []
   const filled: string[] = []
   const ran: string[] = []
+  const opened: string[] = []
   const agentRows: unknown[] = []
   mock.store(on)
   on('command.register', () => ({ value: { isRegistered: true } }) as never)
-  on('ui.open', () => ({ value: { isPlaced: true } }) as never)
+  on('ui.open', () => { opened.push('agenda'); return { value: { isPlaced: true } } as never })
+  on('ui.panes', () => ({ value: [] }) as never)
   on('ui.status', () => ({ value: undefined }) as never)
   on('ui.toast', () => ({ value: undefined }) as never)
   on('turn.complete', (_$, e) => ({ text: e.answer }) as never)
@@ -38,7 +40,7 @@ function bottom(on: Parameters<Parameters<typeof test>[1] extends infer B ? (B e
     filled.push(e.text)
     return { isFilled: true } as never
   })
-  return { submitted, filled, ran, agentRows }
+  return { submitted, filled, ran, agentRows, opened }
 }
 
 const EXTRACT = '{"questions":["Should the undone list survive /clear?"],"undone":["Dashboard regen was left for next session."]}'
@@ -136,4 +138,11 @@ test('a subagent gets one-sentence task summaries from its activity, collapsed b
   await ui.press({ key: 'ag-ag9' })
   expect(await ui.find({ type: 'Text', text: /1\. Read the three recipe files/ })).toBeDefined()
   await ui.unmount()
+})
+
+test('the pane is opened as the person\'s own ask on the first prompt of the session', async ($, on) => {
+  const { opened } = bottom(on, '{"questions":[],"undone":[]}')
+  await $.prompt.submit({ text: 'hello' } as never)
+  await $.prompt.submit({ text: 'again' } as never)
+  expect(opened).toHaveLength(1)
 })

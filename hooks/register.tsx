@@ -344,19 +344,37 @@ function agentGlyph(status: AgentRow['status']): { glyph: string; color: string 
 export const register: Register = (on, options) => {
   const extractorModel = String(options.extractorModel ?? 'haiku')
 
+  let hasOpenedOnPrompt = false
+
   on('session.start', async ($, e, next) => {
     await load($)
     await persist($)
-    await refreshContext($)
     await $.command.register({ name: 'agenda', description: 'Open the Agenda pane (agents, context, questions, undone, notes)' })
     await $.command.register({ name: 'note', description: 'Add a note to the Agenda scratch pad: /note <text>' })
     await $.command.register({ name: 'handoff', description: 'Write a handoff for the next session, then /clear' })
+    // Unasked, the engine seats a pane only on a terminal 144 columns or wider; narrower, it waits
+    // undrawn, and the first prompt.submit below opens it as the person's own ask, at any width.
     void $.ui.open({ id: PANE, title: TITLE })
+    try {
+      await refreshContext($)
+    } catch {
+      // No usage yet; the gauge reads "no turn yet" until the first reply.
+    }
     $.clock.every(3000, async () => {
       const rows = await read($, agents)
     const expanded = await read($, expandedAgents)
       if (rows.some(one => one.endedAt === undefined)) await refreshAgents($)
     })
+    return next(e)
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    if (!hasOpenedOnPrompt) {
+      hasOpenedOnPrompt = true
+      const panes = await $.ui.panes()
+      const mine = panes.find(one => one.id === PANE)
+      if (!mine || !mine.isPlaced) void $.ui.open({ id: PANE, title: TITLE })
+    }
     return next(e)
   })
 

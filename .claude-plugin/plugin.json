@@ -1,6 +1,6 @@
 {
   "name": "agenda",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pane of open questions, items Claude left undone, and a cross-session scratch pad; answer, dismiss or fire off each one.",
   "types": "./types/index.d.ts",
   "userConfig": {
