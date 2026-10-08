@@ -32,16 +32,18 @@ const theme = atom({ plugin: 'agenda', key: 'theme' } as const, DEFAULT_THEME)
 type Stored = { undone: AgendaItem[]; notes: AgendaItem[]; handoff: Handoff | null }
 type ListName = 'questions' | 'undone' | 'notes'
 
-const EXTRACT_SYSTEM = `You read one reply from a coding assistant to its user, together with the user's request it answers and the list of unfinished items already recorded. You answer with three lists.
+const EXTRACT_SYSTEM = `You read one reply from a coding assistant to its user, together with the user's request it answers, the open questions already recorded, and the list of unfinished items already recorded. You answer with four lists.
 
-"questions": every question or decision the assistant is asking the USER to answer or decide, that the user still needs to respond to. Include requests for a choice, confirmation, missing information or a go/no-go. Exclude rhetorical questions, questions the assistant answered itself, and questions directed at nobody.
+"questions": every NEW question or decision the assistant is asking the USER to answer or decide, that the user still needs to respond to. Include requests for a choice, confirmation, missing information or a go/no-go. Exclude rhetorical questions, questions the assistant answered itself, questions directed at nobody, and anything already in the recorded open questions.
+
+"answered": the ids from the recorded open questions that the user's request answers or decides, or that this reply shows are settled, withdrawn, or no longer relevant. A user who tells the assistant what to do about a question has answered it even without using the word.
 
 "undone": ONLY work the user asked for that the assistant explicitly did not finish. A part of the request it dropped or skipped, a step it said it would do next but did not, a failing check it left broken. Most replies have ZERO undone items. Exclude all of these: caveats about what it could not verify from where it sits ("not verified live", "needs a real run", "tell me what you see"); optional suggestions, ideas, offers or follow-ups; work that waits on the user's decision (that is a question); explanations of how something works; anything that is already in the recorded list.
 
 "resolved": the ids from the recorded list that this reply shows are now finished, superseded, or no longer apply.
 
 Write each new item as one short self-contained sentence (max 160 characters) that makes sense without the reply. Do not invent items. Reply with JSON only, no prose, no code fence:
-{"questions":["..."],"undone":["..."],"resolved":["id"]}
+{"questions":["..."],"answered":["id"],"undone":["..."],"resolved":["id"]}
 Empty lists are fine and usual.`
 
 const TASK_SYSTEM = `You watch a coding subagent work. You are given its assignment, the task sentences already recorded for it, and its latest activity (what it said and which tools it used, with the key argument of each). Write ONE sentence, max 110 characters, plain language, past tense, saying what it just did and, if it is clear, why. Describe the work at the level a manager wants ("Read the three recipe files that reference the removed LoRA"), never tool names or paths unless they are the point. Do not repeat a sentence already recorded. Reply with the sentence only.`
@@ -83,10 +85,10 @@ function merge(list: AgendaItem[], texts: string[], at: string): AgendaItem[] {
   return [...list, ...added].slice(-MAX_PER_LIST)
 }
 
-type Extracted = { questions: string[]; undone: string[]; resolved: string[] }
+type Extracted = { questions: string[]; answered: string[]; undone: string[]; resolved: string[] }
 
 function parseExtract(text: string): Extracted {
-  const none: Extracted = { questions: [], undone: [], resolved: [] }
+  const none: Extracted = { questions: [], answered: [], undone: [], resolved: [] }
   const start = text.indexOf('{')
   const end = text.lastIndexOf('}')
   if (start < 0 || end <= start) return none
@@ -94,7 +96,12 @@ function parseExtract(text: string): Extracted {
     const parsed = JSON.parse(text.slice(start, end + 1)) as Partial<Record<keyof Extracted, unknown>>
     const strings = (value: unknown): string[] =>
       Array.isArray(value) ? value.filter((one): one is string => typeof one === 'string') : []
-    return { questions: strings(parsed.questions), undone: strings(parsed.undone), resolved: strings(parsed.resolved) }
+    return {
+      questions: strings(parsed.questions),
+      answered: strings(parsed.answered),
+      undone: strings(parsed.undone),
+      resolved: strings(parsed.resolved),
+    }
   } catch {
     return none
   }
@@ -211,12 +218,20 @@ async function refreshAgents($: EngineInterface): Promise<void> {
 
 let lastPrompt = ''
 
+// The question the ✎ button put into the prompt box; cleared from the list when that prompt is sent.
+const ANSWER_PREFIX = 'Answering your earlier question '
+let pendingAnswer: AgendaItem | null = null
+
 async function scanAnswer($: EngineInterface, answer: string, model: string): Promise<void> {
   await update($, scanning, () => true)
   try {
     const recorded = await read($, undone)
+    const open = await read($, questions)
     const prompt = [
       `User's request:\n${lastPrompt.trim().slice(0, 4000) || '(not captured)'}`,
+      open.length
+        ? `Recorded open questions (id: text):\n${open.map(one => `${one.id}: ${one.text}`).join('\n')}`
+        : 'Recorded open questions: none',
       recorded.length
         ? `Recorded unfinished items (id: text):\n${recorded.map(one => `${one.id}: ${one.text}`).join('\n')}`
         : 'Recorded unfinished items: none',
@@ -225,14 +240,16 @@ async function scanAnswer($: EngineInterface, answer: string, model: string): Pr
     const reply = await $.model.complete({ model, system: EXTRACT_SYSTEM, prompt, effort: 'low', maxTokens: 800, timeoutMs: 30000 })
     if (!reply.isAnswered) return
     const found = parseExtract(reply.text)
+    const answered = new Set(found.answered.filter(id => open.some(one => one.id === id)))
     const resolved = new Set(found.resolved.filter(id => recorded.some(one => one.id === id)))
-    if (found.questions.length === 0 && found.undone.length === 0 && resolved.size === 0) return
+    if (found.questions.length === 0 && found.undone.length === 0 && answered.size === 0 && resolved.size === 0) return
     const at = new Date().toISOString()
-    await update($, questions, list => merge(list, found.questions, at))
+    await update($, questions, list => merge(list.filter(one => !answered.has(one.id)), found.questions, at))
     await update($, undone, list => merge(list.filter(one => !resolved.has(one.id)), found.undone, at))
     await persist($)
     const parts: string[] = []
     if (found.questions.length) parts.push(`${found.questions.length} open question${found.questions.length === 1 ? '' : 's'}`)
+    if (answered.size) parts.push(`${answered.size} answered`)
     if (found.undone.length) parts.push(`${found.undone.length} undone`)
     if (resolved.size) parts.push(`${resolved.size} resolved`)
     $.ui.toast(`Agenda: ${parts.join(', ')}`)
@@ -435,7 +452,14 @@ export const register: Register = (on, options) => {
   })
 
   on('prompt.submit', async ($, e, next) => {
-    if (e.origin?.kind !== 'plugin') lastPrompt = e.text
+    if (e.origin?.kind !== 'plugin') {
+      lastPrompt = e.text
+      const answering = pendingAnswer
+      if (answering && e.text.startsWith(ANSWER_PREFIX)) {
+        pendingAnswer = null
+        await setList($, 'questions', list => list.filter(one => one.id !== answering.id))
+      }
+    }
     if (!hasOpenedOnPrompt) {
       hasOpenedOnPrompt = true
       const panes = await $.ui.panes()
@@ -564,7 +588,8 @@ export const register: Register = (on, options) => {
     const now = Date.now()
 
     const askAnswer = (item: AgendaItem) => async () => {
-      await $.prompt.fill({ text: `Answering your earlier question "${item.text}": `, mode: 'replace' })
+      pendingAnswer = item
+      await $.prompt.fill({ text: `${ANSWER_PREFIX}"${item.text}": `, mode: 'replace' })
     }
     const dismiss = (which: ListName, item: AgendaItem) => () =>
       void setList($, which, list => list.filter(one => one.id !== item.id))

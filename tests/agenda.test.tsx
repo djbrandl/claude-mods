@@ -216,6 +216,38 @@ test('a missing theme file is written with the defaults; an edited one restyles 
   expect(statuses.length).toBeGreaterThanOrEqual(0)
 })
 
+test('a question answered through the ✎ button leaves the pane when that prompt is sent', async ($, on) => {
+  const { filled } = bottom(on, EXTRACT)
+  await $.turn.complete({ answer: 'x'.repeat(40), durationMs: 1, isAborted: false, reason: 'answer', turnId: 't1' } as never)
+  let ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  const answer = (await ui.findAll({ type: 'Button' })).find(b => b.props.label === '✎')
+  await ui.press({ key: answer!.key! })
+  await ui.unmount()
+  expect(filled[0]).toMatch(/survive/)
+  await $.prompt.submit({ text: `${filled[0]}yes, keep it`, origin: { kind: 'composer' } } as never)
+  ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(await ui.find({ type: 'Text', text: /survive/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Dashboard regen/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a question the user answers in their own words is dropped by the next scan', async ($, on) => {
+  const { prompts } = bottom(on, prompt => {
+    const m = /Recorded open questions \(id: text\):\n([a-z0-9-]+): Should the undone list survive/.exec(prompt)
+    return m ? `{"questions":[],"answered":["${m[1]}"],"undone":[],"resolved":[]}` : EXTRACT
+  })
+  await $.turn.complete({ answer: 'x'.repeat(40), durationMs: 1, isAborted: false, reason: 'answer', turnId: 't1' } as never)
+  let ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(await ui.find({ type: 'Text', text: /survive/ })).toBeDefined()
+  await ui.unmount()
+  await $.prompt.submit({ text: 'Yes, it should survive /clear.', origin: { kind: 'composer' } } as never)
+  await $.turn.complete({ answer: 'Understood, the undone list now survives /clear.', durationMs: 1, isAborted: false, reason: 'answer', turnId: 't2' } as never)
+  ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(await ui.find({ type: 'Text', text: /survive/ })).toBeUndefined()
+  await ui.unmount()
+  expect(prompts[1]).toMatch(/Recorded open questions \(id: text\):\n[a-z0-9-]+: Should the undone list survive/)
+})
+
 test('an undone item is dropped once a later reply resolves it, and the scan sees the request and the recorded list', async ($, on) => {
   const { prompts } = bottom(on, prompt => {
     const m = /Recorded unfinished items \(id: text\):\n([a-z0-9-]+): Dashboard regen/.exec(prompt)
