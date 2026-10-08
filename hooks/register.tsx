@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgendaItem, AgentRow, ContextGauge, Handoff, Theme } from '../types'
+import type { AgendaItem, AgentRow, ContextGauge, Handoff, PlanStep, Theme } from '../types'
 import { DEFAULT_THEME, THEME_DOC, legend, mergeTheme } from './theme'
 
 const PANE = 'agenda'
@@ -10,7 +10,7 @@ const LEGACY_STORE_KEY = 'agenda:v1'
 const STORE_PREFIX = 'agenda:v2:'
 const MAX_PER_LIST = 60
 const MAX_DONE_AGENTS = 4
-const MAX_TASKS_PER_AGENT = 10
+const MAX_PLAN_STEPS = 8
 const SUMMARIZE_AFTER_TOOLS = 4
 
 // Looks come from the theme file (see hooks/theme.ts); T mirrors the state atom for the helpers.
@@ -20,7 +20,8 @@ const questions = atom({ plugin: 'agenda', key: 'questions' } as const, [])
 const undone = atom({ plugin: 'agenda', key: 'undone' } as const, [])
 const notes = atom({ plugin: 'agenda', key: 'notes' } as const, [])
 const agents = atom({ plugin: 'agenda', key: 'agents' } as const, [])
-const expandedAgents = atom({ plugin: 'agenda', key: 'expandedAgents' } as const, [])
+// Agents whose row the person flipped from its default: running rows open, finished rows folded.
+const toggledAgents = atom({ plugin: 'agenda', key: 'toggledAgents' } as const, [])
 const context = atom({ plugin: 'agenda', key: 'context' } as const, null)
 const handoff = atom({ plugin: 'agenda', key: 'handoff' } as const, null)
 const scanning = atom({ plugin: 'agenda', key: 'scanning' } as const, false)
@@ -46,7 +47,12 @@ Write each new item as one short self-contained sentence (max 160 characters) th
 {"questions":["..."],"answered":["id"],"undone":["..."],"resolved":["id"]}
 Empty lists are fine and usual.`
 
-const TASK_SYSTEM = `You watch a coding subagent work. You are given its assignment, the task sentences already recorded for it, and its latest activity (what it said and which tools it used, with the key argument of each). Write ONE sentence, max 110 characters, plain language, past tense, saying what it just did and, if it is clear, why. Describe the work at the level a manager wants ("Read the three recipe files that reference the removed LoRA"), never tool names or paths unless they are the point. Do not repeat a sentence already recorded. Reply with the sentence only.`
+const PLAN_SYSTEM = `You are given the assignment a coding subagent was just handed. List the macro steps it will have to carry out to finish: the outcomes a manager would track, not individual file reads or commands. Between 2 and 6 steps, in the order they will likely happen, each a short phrase of at most 60 characters in plain language, no tool names or paths unless they are the point. Reply with JSON only, no prose, no code fence:
+{"steps":["..."]}`
+
+const PROGRESS_SYSTEM = `You watch a coding subagent work against a numbered plan. You are given its assignment, the plan (number, state, step), and its latest activity (what it said and which tools it used, with the key argument of each). Decide what the activity shows: which steps are now finished, and which single step it is working on now. Add a new step ONLY if the agent is clearly doing substantial work that no planned step covers; phrase it like the others, max 60 characters. Reply with JSON only, no prose, no code fence:
+{"done":[1],"doing":2,"added":["..."]}
+"doing" is a step number or null; a step number may be from the plan or count on from the end for an added step.`
 
 const HANDOFF_PROMPT = `Write a handoff for a fresh session that will continue this work with none of this conversation. Plain Markdown, under 60 lines, no preamble. Sections, in this order:
 # Handoff
@@ -203,7 +209,7 @@ async function refreshAgents($: EngineInterface): Promise<void> {
         status: info.status,
         startedAt: prev?.startedAt ?? now,
         endedAt: isOver ? (prev?.endedAt ?? now) : undefined,
-        tasks: prev?.tasks ?? [],
+        plan: isOver && prev ? finishPlan(prev.plan, info.status === 'completed') : (prev?.plan ?? []),
       })
     }
     const rows = [...byId.values()]
@@ -291,6 +297,59 @@ function noteActivity(agentId: string, blocks: readonly { type: string; [field: 
   return { isDue: hasNarration || buf.tools >= SUMMARIZE_AFTER_TOOLS }
 }
 
+function parseJson(text: string): Record<string, unknown> | null {
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  try {
+    const parsed: unknown = JSON.parse(text.slice(start, end + 1))
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
+function stepTexts(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value
+        .filter((one): one is string => typeof one === 'string')
+        .map(one => one.replace(/\s+/g, ' ').trim().replace(/^[-*\d.)\s]+/, ''))
+        .filter(one => one.length > 0)
+        .map(one => one.slice(0, 80))
+    : []
+}
+
+// The agent is over: whatever it was on is done when it completed, otherwise left where it stood.
+function finishPlan(plan: PlanStep[], isCompleted: boolean): PlanStep[] {
+  if (!isCompleted) return plan
+  return plan.map(step => (step.state === 'doing' ? { ...step, state: 'done' } : step))
+}
+
+// Called once per spawn with the assignment the subagent was handed.
+async function planAgent($: EngineInterface, agentId: string, description: string, assignment: string, model: string): Promise<void> {
+  const reply = await $.model.complete({
+    model,
+    system: PLAN_SYSTEM,
+    prompt: `Description: ${description}\n\nAssignment:\n${assignment.slice(0, 12000)}`,
+    effort: 'low',
+    maxTokens: 300,
+    timeoutMs: 20000,
+  })
+  if (!reply.isAnswered) return
+  const steps = stepTexts(parseJson(reply.text)?.steps).slice(0, MAX_PLAN_STEPS)
+  if (steps.length === 0) return
+  await update($, agents, list =>
+    list.map(one => {
+      if (one.id !== agentId) return one
+      // Progress may already have added steps; the plan goes in front of them.
+      const known = new Set(steps.map(norm))
+      const extra = one.plan.filter(step => !known.has(norm(step.text)))
+      const planned: PlanStep[] = steps.map(text => ({ text, state: one.plan.find(step => norm(step.text) === norm(text))?.state ?? 'todo' }))
+      return { ...one, plan: [...planned, ...extra].slice(0, MAX_PLAN_STEPS) }
+    }),
+  )
+}
+
 async function summarizeActivity($: EngineInterface, agentId: string, model: string): Promise<void> {
   const buf = activity.get(agentId)
   if (!buf || buf.lines.length === 0 || buf.inFlight) return
@@ -298,21 +357,34 @@ async function summarizeActivity($: EngineInterface, agentId: string, model: str
   buf.tools = 0
   const run = (async () => {
     const row = (await read($, agents)).find(one => one.id === agentId)
+    const plan = row?.plan ?? []
     const prompt = [
       `Assignment: ${row?.description ?? agentId}`,
-      row?.tasks.length ? `Recorded so far:\n${row.tasks.map(one => `- ${one}`).join('\n')}` : 'Recorded so far: nothing',
+      plan.length ? `Plan:\n${plan.map((step, i) => `${i + 1}. [${step.state}] ${step.text}`).join('\n')}` : 'Plan: none yet',
       `Latest activity:\n${lines.map(one => `- ${one}`).join('\n')}`,
     ].join('\n\n')
-    const reply = await $.model.complete({ model, system: TASK_SYSTEM, prompt: prompt.slice(0, 12000), effort: 'low', maxTokens: 120, timeoutMs: 20000 })
+    const reply = await $.model.complete({ model, system: PROGRESS_SYSTEM, prompt: prompt.slice(0, 12000), effort: 'low', maxTokens: 200, timeoutMs: 20000 })
     if (!reply.isAnswered) return
-    const sentence = reply.text.replace(/\s+/g, ' ').trim().replace(/^["'‘“-]+|["'’”]+$/g, '')
-    if (!sentence) return
+    const parsed = parseJson(reply.text)
+    if (!parsed) return
+    const done = new Set(Array.isArray(parsed.done) ? parsed.done.filter((one): one is number => Number.isInteger(one)) : [])
+    const doing = Number.isInteger(parsed.doing) ? (parsed.doing as number) : null
+    const added = stepTexts(parsed.added)
     await update($, agents, list =>
-      list.map(one =>
-        one.id === agentId && !one.tasks.some(t => norm(t) === norm(sentence))
-          ? { ...one, tasks: [...one.tasks, sentence].slice(-MAX_TASKS_PER_AGENT) }
-          : one,
-      ),
+      list.map(one => {
+        if (one.id !== agentId) return one
+        const have = new Set(one.plan.map(step => norm(step.text)))
+        const extra: PlanStep[] = added.filter(text => !have.has(norm(text))).map(text => ({ text, state: 'todo' }))
+        const next = [...one.plan, ...extra].slice(0, MAX_PLAN_STEPS).map((step, i) => {
+          const n = i + 1
+          if (done.has(n)) return { ...step, state: 'done' as const }
+          if (n === doing) return { ...step, state: 'doing' as const }
+          // Moving on to a later step finishes the one it was on.
+          if (step.state === 'doing' && doing !== null && doing > n) return { ...step, state: 'done' as const }
+          return step
+        })
+        return { ...one, plan: next }
+      }),
     )
   })()
   buf.inFlight = run
@@ -445,7 +517,6 @@ export const register: Register = (on, options) => {
     }
     $.clock.every(3000, async () => {
       const rows = await read($, agents)
-    const expanded = await read($, expandedAgents)
       if (rows.some(one => one.endedAt === undefined)) await refreshAgents($)
     })
     return next(e)
@@ -509,6 +580,9 @@ export const register: Register = (on, options) => {
   on('agent.spawn', async ($, e, next) => {
     const result = await next(e)
     await refreshAgents($)
+    if (!result.deny && result.agentId) {
+      void planAgent($, result.agentId, e.description || e.subagentType, e.prompt, extractorModel)
+    }
     return result
   }).catch(($, e, next) => next(e))
 
@@ -576,7 +650,7 @@ export const register: Register = (on, options) => {
     const us = await read($, undone)
     const ns = await read($, notes)
     const rows = await read($, agents)
-    const expanded = await read($, expandedAgents)
+    const toggled = await read($, toggledAgents)
     const gauge = await read($, context)
     const pending = await read($, handoff)
     const busy = await read($, scanning)
@@ -614,7 +688,7 @@ export const register: Register = (on, options) => {
       void $.command.run({ command: 'clear' })
     }
     const toggleAgent = (id: string) => () =>
-      void update($, expandedAgents, list => (list.includes(id) ? list.filter(one => one !== id) : [...list, id]))
+      void update($, toggledAgents, list => (list.includes(id) ? list.filter(one => one !== id) : [...list, id]))
     const dropHandoff = () => {
       void (async () => {
         await update($, handoff, () => null)
@@ -701,40 +775,48 @@ export const register: Register = (on, options) => {
         {rows.map(row => {
           const { glyph, color } = agentGlyph(row.status)
           const isDone = row.endedAt !== undefined
-          const isOpen = expanded.includes(row.id)
-          const latest = row.tasks[row.tasks.length - 1]
+          // Running rows open by default so the plan is in view; finished rows fold to one line.
+          const isOpen = toggled.includes(row.id) ? isDone : !isDone
+          const doneCount = row.plan.filter(step => step.state === 'done').length
+          const current = row.plan.find(step => step.state === 'doing') ?? row.plan.find(step => step.state === 'todo')
+          const folded = row.plan.length === 0 ? '' : isDone ? `${doneCount}/${row.plan.length} steps` : current ? `${doneCount}/${row.plan.length} · ${current.text}` : ''
           return (
             <Box key={row.id} flexDirection="column" paddingLeft={1}>
               <Box gap={1}>
                 <Text color={color}>{glyph}</Text>
                 <Button key={`ag-${row.id}`} plain label={isOpen ? t.glyphs.collapse : t.glyphs.expand} onPress={toggleAgent(row.id)} />
-                <Box width={inner - 14}>
-                  <Text color={isDone ? t.colors.dim : t.colors.text} bold={!isDone} wrap="truncate-end">
+                <Box width={inner - 12}>
+                  <Text color={isDone ? t.colors.dim : t.colors.text} bold={!isDone} wrap={isOpen ? 'wrap' : 'truncate-end'}>
                     {row.description}
                   </Text>
                 </Box>
                 <Text color={t.colors.dim}>{elapsed(row, now)}</Text>
               </Box>
-              {!isOpen && latest && (
+              {!isOpen && folded && (
                 <Box paddingLeft={4} width={inner - 4}>
                   <Text color={t.colors.muted} wrap="truncate-end">
-                    {latest}
+                    {folded}
                   </Text>
                 </Box>
               )}
-              {isOpen && row.tasks.length === 0 && (
+              {isOpen && row.plan.length === 0 && (
                 <Box paddingLeft={4}>
                   <Text color={t.colors.dim} italic>
-                    no tasks summarised yet
+                    {isDone ? 'no plan recorded' : 'reading its assignment…'}
                   </Text>
                 </Box>
               )}
               {isOpen &&
-                row.tasks.map((task, i) => (
-                  <Box key={`${row.id}-${i}`} paddingLeft={4} width={inner - 4}>
-                    <Text color={i === row.tasks.length - 1 ? t.colors.text : t.colors.muted} wrap="wrap">
-                      {i + 1}. {task}
+                row.plan.map((step, i) => (
+                  <Box key={`${row.id}-${i}`} paddingLeft={4} width={inner - 4} gap={1}>
+                    <Text color={step.state === 'done' ? t.colors.success : step.state === 'doing' ? t.colors.text : t.colors.dim}>
+                      {step.state === 'done' ? t.glyphs.stepDone : step.state === 'doing' ? t.glyphs.stepDoing : t.glyphs.stepTodo}
                     </Text>
+                    <Box width={inner - 6}>
+                      <Text color={step.state === 'doing' ? t.colors.text : step.state === 'done' ? t.colors.muted : t.colors.dim} bold={step.state === 'doing'} wrap="wrap">
+                        {step.text}
+                      </Text>
+                    </Box>
                   </Box>
                 ))}
             </Box>

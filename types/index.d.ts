@@ -13,8 +13,13 @@ export type AgentRow = {
   status: 'pending' | 'running' | 'waiting' | 'idle' | 'completed' | 'failed' | 'killed'
   startedAt: number
   endedAt?: number
-  /** One-sentence summaries of the work it has done so far, oldest first. */
-  tasks: string[]
+  /** The macro steps its assignment asks for, in order, each ticked off as its activity shows progress. */
+  plan: PlanStep[]
+}
+
+export type PlanStep = {
+  text: string
+  state: 'todo' | 'doing' | 'done'
 }
 
 export type ContextGauge = {
@@ -38,7 +43,7 @@ declare module 'claude-code' {
       undone: AgendaItem[]
       notes: AgendaItem[]
       agents: AgentRow[]
-      expandedAgents: string[]
+      toggledAgents: string[]
       context: ContextGauge | null
       handoff: Handoff | null
       scanning: boolean
@@ -64,6 +69,18 @@ export type Theme = {
     failed: StatusLook
     killed: StatusLook
   }
-  glyphs: { answer: string; do: string; doAll: string; dismiss: string; dismissAll: string; expand: string; collapse: string; bullet: string }
+  glyphs: {
+    answer: string
+    do: string
+    doAll: string
+    dismiss: string
+    dismissAll: string
+    expand: string
+    collapse: string
+    bullet: string
+    stepTodo: string
+    stepDoing: string
+    stepDone: string
+  }
   labels: { context: string; agents: string; questions: string; undone: string; notes: string; handoff: string; dropHandoff: string }
 }

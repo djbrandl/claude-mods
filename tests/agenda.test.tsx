@@ -137,22 +137,46 @@ test('handoff + clear forks a handoff, keeps it for the next session and runs /c
   expect(after.sections.find(s => s.id === 'agenda:handoff')).toBeUndefined()
 })
 
-test('a subagent gets one-sentence task summaries from its activity, collapsed by default', async ($, on) => {
-  const { agentRows } = bottom(on, 'Read the three recipe files that reference the removed LoRA.')
+test('a subagent shows its macro-step plan from its assignment, ticked off by its activity, folded once it finishes', async ($, on) => {
+  const { agentRows, prompts } = bottom(on, prompt =>
+    prompt.startsWith('Description:')
+      ? '{"steps":["Find every recipe that references the removed LoRA","Rewrite those recipes to the replacement","Run the recipe validator"]}'
+      : '{"done":[1],"doing":2,"added":[]}',
+  )
+  on('agent.spawn', () => ({ model: 'haiku', agentId: 'ag9' }) as never)
   agentRows.push({ id: 'ag9', description: 'Audit recipe schema', type: 'general-purpose', status: 'running' })
+  await $.agent.spawn({
+    tool_use_id: 'tu1', prompt: 'Find every recipe referencing the removed LoRA, rewrite them to the replacement, then run the validator.',
+    description: 'Audit recipe schema', subagentType: 'general-purpose', provider: { plugin: 'engine', tier: 'core' }, parentModel: 'm', background: false, fork: false,
+  } as never)
+  // The plan is written in the background; a main-loop turn settles it, as in a live session.
   await $.turn.complete({ answer: 'x'.repeat(40), durationMs: 1, isAborted: false, reason: 'answer', turnId: 't' } as never)
+  let ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(prompts[0]).toMatch(/Assignment:\nFind every recipe/)
+  // Open by default while running: every step is readable, none ticked yet.
+  expect(await ui.find({ type: 'Text', text: /Find every recipe that references/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Run the recipe validator/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^✓$/ })).toBeUndefined()
+  await ui.unmount()
   const blocks = [
-    { type: 'text', text: 'I will start by reading every recipe that references the LoRA so I know the blast radius.' },
-    { type: 'tool_use', name: 'Read', input: { file_path: 'recipes/a.json' } },
+    { type: 'text', text: 'Found four recipes that reference the LoRA; now rewriting each one to point at the replacement file.' },
+    { type: 'tool_use', name: 'Edit', input: { file_path: 'recipes/a.json' } },
   ]
   // The test kit keeps no transcript beneath the plugins, so the store rejects; the plugin's bookkeeping runs first.
   await $.session.append({ message: { type: 'assistant', role: 'assistant', content: blocks }, door: 'response', origin: { kind: 'model', model: 'm' }, uuid: 'u1', agentId: 'ag9' } as never).catch(() => undefined)
+  ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(prompts[prompts.length - 1]).toMatch(/Plan:\n1\. \[todo\] Find every recipe/)
+  expect(await ui.find({ type: 'Text', text: /^✓$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^◉$/ })).toBeDefined()
+  await ui.unmount()
+  // Finished: the row folds to a progress line and the step it was on counts as done; ▸ reopens it.
+  agentRows[0] = { ...(agentRows[0] as object), status: 'completed' }
   await $.turn.complete({ answer: 'done', durationMs: 1, isAborted: false, reason: 'answer', turnId: 'ta', agentId: 'ag9' } as never)
-  const ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
-  expect(await ui.find({ type: 'Text', text: /Read the three recipe files/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /1\. Read the three/ })).toBeUndefined()
+  ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(await ui.find({ type: 'Text', text: /2\/3 steps/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Run the recipe validator/ })).toBeUndefined()
   await ui.press({ key: 'ag-ag9' })
-  expect(await ui.find({ type: 'Text', text: /1\. Read the three recipe files/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Run the recipe validator/ })).toBeDefined()
   await ui.unmount()
 })
 
