@@ -14,6 +14,12 @@ across sessions and injected into the system prompt. The status line shows the c
 Answer `y` to add the marketplace, pick the user scope. Then `/agenda` opens the pane, `/note <text>` adds a
 note, `/handoff` writes a handoff and clears.
 
+## Agents list
+
+Running subagents are listed live. One that has finished, or gone idle waiting for a message, folds to a single
+line, and at most four finished rows are kept. `✕ finished` on the AGENTS heading clears them; a cleared agent
+reappears only if it is woken again. `/clear` starts the next session with an empty list.
+
 ## Scrolling
 
 When the pane holds more than fits, a scrollbar runs down its right edge. Scroll with the mouse wheel over the

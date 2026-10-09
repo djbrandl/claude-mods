@@ -22,6 +22,8 @@ const notes = atom({ plugin: 'agenda', key: 'notes' } as const, [])
 const agents = atom({ plugin: 'agenda', key: 'agents' } as const, [])
 // Agents whose row the person flipped from its default: running rows open, finished rows folded.
 const toggledAgents = atom({ plugin: 'agenda', key: 'toggledAgents' } as const, [])
+// Finished agents the person cleared; the engine keeps listing them, so they stay hidden unless they wake.
+const dismissedAgents = atom({ plugin: 'agenda', key: 'dismissedAgents' } as const, [])
 const context = atom({ plugin: 'agenda', key: 'context' } as const, null)
 const handoff = atom({ plugin: 'agenda', key: 'handoff' } as const, null)
 const scanning = atom({ plugin: 'agenda', key: 'scanning' } as const, false)
@@ -195,13 +197,19 @@ async function refreshContext($: EngineInterface): Promise<void> {
 }
 
 async function refreshAgents($: EngineInterface): Promise<void> {
-  const live = await $.agent.list()
+  const [live, dismissed] = await Promise.all([$.agent.list(), read($, dismissedAgents)])
   const now = Date.now()
+  const woke: string[] = []
   await update($, agents, list => {
     const byId = new Map(list.map(one => [one.id, one]))
     for (const info of live) {
       const prev = byId.get(info.id)
-      const isOver = info.status === 'completed' || info.status === 'failed' || info.status === 'killed'
+      // An idle agent has finished its turn and waits for a message that may never come: it counts as done.
+      const isOver = info.status === 'completed' || info.status === 'failed' || info.status === 'killed' || info.status === 'idle'
+      if (dismissed.includes(info.id)) {
+        if (isOver) continue
+        woke.push(info.id)
+      }
       byId.set(info.id, {
         id: info.id,
         description: info.description || prev?.description || info.type,
@@ -209,7 +217,7 @@ async function refreshAgents($: EngineInterface): Promise<void> {
         status: info.status,
         startedAt: prev?.startedAt ?? now,
         endedAt: isOver ? (prev?.endedAt ?? now) : undefined,
-        plan: isOver && prev ? finishPlan(prev.plan, info.status === 'completed') : (prev?.plan ?? []),
+        plan: isOver && prev ? finishPlan(prev.plan, info.status === 'completed' || info.status === 'idle') : (prev?.plan ?? []),
       })
     }
     const rows = [...byId.values()]
@@ -220,6 +228,16 @@ async function refreshAgents($: EngineInterface): Promise<void> {
       .slice(0, MAX_DONE_AGENTS)
     return [...active, ...done]
   })
+  if (woke.length > 0) await update($, dismissedAgents, list => list.filter(id => !woke.includes(id)))
+}
+
+// Drops every finished row and keeps it hidden from later refreshes.
+async function clearFinishedAgents($: EngineInterface): Promise<void> {
+  const rows = await read($, agents)
+  const finished = rows.filter(one => one.endedAt !== undefined).map(one => one.id)
+  if (finished.length === 0) return
+  await update($, dismissedAgents, list => [...new Set([...list, ...finished])])
+  await update($, agents, list => list.filter(one => one.endedAt === undefined))
 }
 
 let lastPrompt = ''
@@ -578,6 +596,11 @@ export const register: Register = (on, options) => {
 
   on('session.end', async ($, e, next) => {
     await update($, questions, () => [])
+    // A cleared session starts with an empty agents list; the old ones stay hidden if the engine still lists them.
+    const known = (await read($, agents)).map(one => one.id)
+    await update($, dismissedAgents, list => [...new Set([...list, ...known])])
+    await update($, agents, () => [])
+    await update($, toggledAgents, () => [])
     return next(e)
   })
 
@@ -837,7 +860,14 @@ export const register: Register = (on, options) => {
           </Box>
         )}
 
-        {heading(t.labels.agents, t.sections.agents, rows.filter(one => one.endedAt === undefined).length)}
+        {heading(
+          t.labels.agents,
+          t.sections.agents,
+          rows.filter(one => one.endedAt === undefined).length,
+          rows.some(one => one.endedAt !== undefined) ? (
+            <Button key="clear-agents" plain label={t.glyphs.clearFinished} dimColor onPress={() => void clearFinishedAgents($)} />
+          ) : undefined,
+        )}
         {rows.length === 0 && empty('no subagents')}
         {rows.map(row => {
           const { glyph, color } = agentGlyph(row.status)

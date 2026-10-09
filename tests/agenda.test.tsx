@@ -312,3 +312,31 @@ test('a pane taller than its window draws a scrollbar whose thumb follows the sc
     await tall.unmount()
   }
 })
+
+test('idle subagents count as finished, and clearing finished rows keeps them gone across refreshes', async ($, on) => {
+  const { agentRows } = bottom(on, '{"questions":[],"undone":[]}')
+  agentRows.push({ id: 'a1', description: 'Audit recipe schema', type: 'general-purpose', status: 'running' })
+  agentRows.push({ id: 'a2', description: 'Scan LoRA folder', type: 'Explore', status: 'idle' })
+  agentRows.push({ id: 'a3', description: 'Hash the checkpoints', type: 'general-purpose', status: 'completed' })
+  await $.turn.complete({ answer: 'x'.repeat(40), durationMs: 1, isAborted: false, reason: 'answer', turnId: 't' } as never)
+  let ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  // Only the running agent counts as active.
+  expect(await ui.find({ type: 'Text', text: /^1$/ })).toBeDefined()
+  await ui.press({ key: 'clear-agents' })
+  expect(await ui.find({ type: 'Text', text: /Scan LoRA folder/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Hash the checkpoints/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Audit recipe schema/ })).toBeDefined()
+  await ui.unmount()
+  // The engine still lists them; a refresh must not bring them back.
+  await $.turn.complete({ answer: 'y'.repeat(40), durationMs: 1, isAborted: false, reason: 'answer', turnId: 't2' } as never)
+  ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(await ui.find({ type: 'Text', text: /Hash the checkpoints/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'clear-agents' } as never)).toBeUndefined()
+  await ui.unmount()
+  // A cleared agent that is messaged awake shows again.
+  agentRows[1] = { ...(agentRows[1] as object), status: 'running' }
+  await $.turn.complete({ answer: 'z'.repeat(40), durationMs: 1, isAborted: false, reason: 'answer', turnId: 't3' } as never)
+  ui = await $.ui.mount({ plugin: 'agenda', surface: 'terminal', component: 'Pane', props: PANE_PROPS, requestId: 'agenda' })
+  expect(await ui.find({ type: 'Text', text: /Scan LoRA folder/ })).toBeDefined()
+  await ui.unmount()
+})

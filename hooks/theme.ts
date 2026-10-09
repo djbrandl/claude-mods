@@ -23,6 +23,7 @@ export const DEFAULT_THEME: Theme = {
     doAll: '▶▶ all',
     dismiss: '✕',
     dismissAll: '✕ all',
+    clearFinished: '✕ finished',
     expand: '▸',
     collapse: '▾',
     bullet: '▎',

@@ -44,6 +44,7 @@ declare module 'claude-code' {
       notes: AgendaItem[]
       agents: AgentRow[]
       toggledAgents: string[]
+      dismissedAgents: string[]
       context: ContextGauge | null
       handoff: Handoff | null
       scanning: boolean
@@ -75,6 +76,8 @@ export type Theme = {
     doAll: string
     dismiss: string
     dismissAll: string
+    /** Clears the finished rows from the agents list. */
+    clearFinished: string
     expand: string
     collapse: string
     bullet: string
