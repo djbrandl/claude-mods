@@ -288,3 +288,27 @@ test('an undone item is dropped once a later reply resolves it, and the scan see
   expect(await ui.find({ type: 'Text', text: /Dashboard regen/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('a pane taller than its window draws a scrollbar whose thumb follows the scroll; a short one draws none', async ($, on) => {
+  const items = Array.from({ length: 30 }, (_, i) => `"Undone item number ${i} needs a follow-up pass"`)
+  bottom(on, `{"questions":[],"undone":[${items.join(',')}]}`)
+  await $.turn.complete({ answer: 'x'.repeat(40), durationMs: 1, isAborted: false, reason: 'answer', turnId: 't' } as never)
+  // Track cells in tree order, top row first; the indexes of the thumb's cells.
+  const thumbRows = async (ui: { findAll: (q: { type: 'Text'; text: RegExp }) => Promise<readonly { text?: string }[]> }) =>
+    (await ui.findAll({ type: 'Text', text: /^[┃│]$/ })).flatMap((one, i) => (one.text === '┃' ? [i] : []))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const top = await $.ui.mount({ plugin: 'agenda', surface, component: 'Pane', props: { ...PANE_PROPS, scroll: { offset: 0, bodyRows: 20 } }, requestId: 'agenda' })
+    const atTop = await thumbRows(top)
+    expect(atTop.length).toBeGreaterThan(0)
+    expect(atTop[0]).toBe(0)
+    expect((await top.findAll({ type: 'Text', text: /^[┃│]$/ })).length).toBe(20)
+    await top.unmount()
+    const end = await $.ui.mount({ plugin: 'agenda', surface, component: 'Pane', props: { ...PANE_PROPS, scroll: { offset: 999, bodyRows: 20 } }, requestId: 'agenda' })
+    const atEnd = await thumbRows(end)
+    expect(atEnd[atEnd.length - 1]).toBe(19)
+    await end.unmount()
+    const tall = await $.ui.mount({ plugin: 'agenda', surface, component: 'Pane', props: { ...PANE_PROPS, scroll: { offset: 0, bodyRows: 200 } }, requestId: 'agenda' })
+    expect((await tall.findAll({ type: 'Text', text: /^[┃│]$/ })).length).toBe(0)
+    await tall.unmount()
+  }
+})

@@ -14,6 +14,11 @@ across sessions and injected into the system prompt. The status line shows the c
 Answer `y` to add the marketplace, pick the user scope. Then `/agenda` opens the pane, `/note <text>` adds a
 note, `/handoff` writes a handoff and clears.
 
+## Scrolling
+
+When the pane holds more than fits, a scrollbar runs down its right edge. Scroll with the mouse wheel over the
+pane, or give it the keyboard (ctrl+x tab, or click it) and use the arrows, Page Up/Down, Home and End.
+
 ## The one setting
 
 The installer asks for a **Summary model**. The pane runs a small background Claude call after each reply to

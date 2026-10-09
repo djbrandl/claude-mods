@@ -39,6 +39,7 @@ export const DEFAULT_THEME: Theme = {
     handoff: 'handoff + clear',
     dropHandoff: 'drop pending handoff',
   },
+  scrollbar: { thumb: '┃', track: '│', thumbColor: '#828bb8', trackColor: '#2f334d' },
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

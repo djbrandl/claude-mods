@@ -83,4 +83,5 @@ export type Theme = {
     stepDone: string
   }
   labels: { context: string; agents: string; questions: string; undone: string; notes: string; handoff: string; dropHandoff: string }
+  scrollbar: { thumb: string; track: string; thumbColor: string; trackColor: string }
 }

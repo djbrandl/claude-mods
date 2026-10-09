@@ -228,6 +228,10 @@ let lastPrompt = ''
 const ANSWER_PREFIX = 'Answering your earlier question '
 let pendingAnswer: AgendaItem | null = null
 
+// The pane's own estimate of its tree's height at the last draw, and how far the engine's count differed.
+let lastEstimate = 0
+let rowCorrection = 0
+
 async function scanAnswer($: EngineInterface, answer: string, model: string): Promise<void> {
   await update($, scanning, () => true)
   try {
@@ -438,6 +442,38 @@ function gaugeColor(percent: number): string {
   return T.gauge.ok
 }
 
+/** Rows a word-wrapped Text takes at `width` cells, as the terminal wraps it. */
+function wrapRows(text: string, width: number): number {
+  const w = Math.max(1, width)
+  let rows = 0
+  for (const line of text.split('\n')) {
+    let used = 0
+    let lineRows = 1
+    for (const word of line.split(' ')) {
+      const len = [...word].length
+      if (used === 0) {
+        lineRows += Math.max(0, Math.ceil(len / w) - 1)
+        used = len % w || (len ? w : 0)
+      } else if (used + 1 + len <= w) {
+        used += 1 + len
+      } else {
+        lineRows += Math.ceil(Math.max(1, len) / w)
+        used = len % w || w
+      }
+    }
+    rows += lineRows
+  }
+  return rows
+}
+
+/** The thumb's first row and length on a track of `rows` rows over a tree of `content` rows. */
+function thumb(offset: number, rows: number, content: number): { start: number; size: number } {
+  const size = Math.max(1, Math.min(rows, Math.round((rows * rows) / content)))
+  const travel = Math.max(1, content - rows)
+  const start = Math.round((Math.min(Math.max(0, offset), travel) / travel) * (rows - size))
+  return { start, size }
+}
+
 function kTokens(n: number): string {
   return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n)
 }
@@ -643,6 +679,13 @@ export const register: Register = (on, options) => {
     return { sections }
   })
 
+  // The engine scrolls the pane body but draws no scrollbar, and the render hook is not told the tree's
+  // height. The pane estimates it; each scroll reports the true height, which calibrates the estimate.
+  on('ui.scroll', { component: 'Pane', requestId: PANE }, ($, e, next) => {
+    if (lastEstimate > 0) rowCorrection = e.contentRows - lastEstimate
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const Input = e.surface === 'mobile' ? null : $.ui.resolve(e).Input
@@ -731,6 +774,30 @@ export const register: Register = (on, options) => {
     )
 
     const barWidth = Math.max(8, inner - 8)
+
+    // Height estimate mirroring the layout below, row for row; see the ui.scroll hook.
+    const cells = (text: string) => [...text].length
+    const itemRows = (one: AgendaItem, buttonCells: number) => wrapRows(one.text, inner - 4 - cells(t.glyphs.bullet) - buttonCells)
+    let estimate = 4 + (pending ? 1 : 0)
+    estimate += 2 + (rows.length === 0 ? 1 : 0)
+    for (const row of rows) {
+      const isDone = row.endedAt !== undefined
+      const isOpen = toggled.includes(row.id) ? isDone : !isDone
+      estimate += isOpen ? wrapRows(row.description, inner - 12) : 1
+      if (!isOpen) estimate += row.plan.length > 0 && (isDone || row.plan.some(step => step.state !== 'done')) ? 1 : 0
+      else if (row.plan.length === 0) estimate += 1
+      else for (const step of row.plan) estimate += wrapRows(step.text, inner - 6)
+    }
+    const pairCells = (a: string, b: string) => cells(a) + 1 + cells(b)
+    estimate += 2 + (qs.length === 0 ? 1 : 0) + qs.reduce((n, one) => n + itemRows(one, pairCells(t.glyphs.answer, t.glyphs.dismiss)), 0)
+    estimate += 2 + (us.length === 0 ? 1 : 0) + us.reduce((n, one) => n + itemRows(one, pairCells(t.glyphs.do, t.glyphs.dismiss)), 0)
+    estimate += 2 + ns.reduce((n, one) => n + itemRows(one, cells(t.glyphs.dismiss)), 0)
+    estimate += 1 + 1 + wrapRows(legend(t), inner)
+    lastEstimate = estimate
+    const contentRows = Math.max(1, estimate + rowCorrection)
+    const view = e.props.scroll
+    const overflows = contentRows > view.bodyRows && view.bodyRows > 1
+    const track = overflows ? thumb(view.offset, view.bodyRows, contentRows) : null
 
     return (
       <Box flexDirection="column" width={width} backgroundColor={t.colors.background} paddingX={1}>
@@ -866,6 +933,19 @@ export const register: Register = (on, options) => {
         <Box marginTop={1}>
           <Text color={t.colors.dim}>{legend(t)}</Text>
         </Box>
+        {track && (
+          // Painted over the right padding column, pinned to the rows the window shows.
+          <Box key="scrollbar" position="absolute" top={Math.max(0, Math.min(view.offset, contentRows - view.bodyRows))} right={0} width={1} flexDirection="column">
+            {Array.from({ length: view.bodyRows }, (_, i) => {
+              const isThumb = i >= track.start && i < track.start + track.size
+              return (
+                <Text key={`sb-${i}`} color={isThumb ? t.scrollbar.thumbColor : t.scrollbar.trackColor}>
+                  {isThumb ? t.scrollbar.thumb : t.scrollbar.track}
+                </Text>
+              )
+            })}
+          </Box>
+        )}
       </Box>
     )
   })
